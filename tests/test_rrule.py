@@ -4844,6 +4844,475 @@ class RRuleSetTest(unittest.TestCase):
             self.assertEqual(rrset.count(), 5)
 
 
+@pytest.mark.rruleset
+class RRuleSetExIntervalTest(unittest.TestCase):
+    def testExInterval(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=5, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 5, 9, 0))
+        self.assertEqual(
+            list(rrset),
+            [
+                datetime(1997, 9, 2, 9, 0),
+                datetime(1997, 9, 5, 9, 0),
+                datetime(1997, 9, 6, 9, 0),
+            ],
+        )
+
+    def testExIntervalBounds(self):
+        # The interval is half-open: an occurrence exactly at the start
+        # is excluded, while one exactly at the end is kept.
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=3, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0))
+        self.assertEqual(
+            list(rrset),
+            [datetime(1997, 9, 2, 9, 0), datetime(1997, 9, 4, 9, 0)],
+        )
+
+    def testExIntervalBoundsBetweenOccurrences(self):
+        # The interval bounds do not need to coincide with occurrences.
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=4, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(
+            datetime(1997, 9, 2, 12, 0), datetime(1997, 9, 4, 12, 0)
+        )
+        self.assertEqual(
+            list(rrset),
+            [datetime(1997, 9, 2, 9, 0), datetime(1997, 9, 5, 9, 0)],
+        )
+
+    def testExIntervalRDate(self):
+        rrset = rruleset()
+        for day in range(2, 7):
+            rrset.rdate(datetime(1997, 9, day, 9, 0))
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 5, 9, 0))
+        self.assertEqual(
+            list(rrset),
+            [
+                datetime(1997, 9, 2, 9, 0),
+                datetime(1997, 9, 5, 9, 0),
+                datetime(1997, 9, 6, 9, 0),
+            ],
+        )
+
+    def testExIntervalRRuleAndRDate(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=3, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.rdate(datetime(1997, 9, 10, 9, 0))
+        rrset.rdate(datetime(1997, 9, 11, 9, 0))
+        rrset.exinterval(
+            datetime(1997, 9, 3, 0, 0), datetime(1997, 9, 11, 0, 0)
+        )
+        self.assertEqual(
+            list(rrset),
+            [datetime(1997, 9, 2, 9, 0), datetime(1997, 9, 11, 9, 0)],
+        )
+
+    def testExIntervalOutOfOrderOverlapping(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=10, dtstart=datetime(1997, 9, 2, 9, 0)))
+        # Registered out of order, overlapping one another.
+        rrset.exinterval(datetime(1997, 9, 6, 9, 0), datetime(1997, 9, 8, 9, 0))
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 5, 9, 0))
+        rrset.exinterval(datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 6, 9, 0))
+        self.assertEqual(
+            list(rrset),
+            [
+                datetime(1997, 9, 2, 9, 0),
+                datetime(1997, 9, 8, 9, 0),
+                datetime(1997, 9, 9, 9, 0),
+                datetime(1997, 9, 10, 9, 0),
+                datetime(1997, 9, 11, 9, 0),
+            ],
+        )
+
+    def testExIntervalAdjacentMerged(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=5, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0))
+        rrset.exinterval(datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 5, 9, 0))
+        self.assertEqual(
+            rrset._exinterval,
+            [(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 5, 9, 0))],
+        )
+        self.assertEqual(
+            list(rrset),
+            [
+                datetime(1997, 9, 2, 9, 0),
+                datetime(1997, 9, 5, 9, 0),
+                datetime(1997, 9, 6, 9, 0),
+            ],
+        )
+
+    def testExIntervalDisjointNotMerged(self):
+        rrset = rruleset()
+        rrset.exinterval(datetime(1997, 9, 5, 9, 0), datetime(1997, 9, 6, 9, 0))
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0))
+        self.assertEqual(
+            rrset._exinterval,
+            [
+                (datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0)),
+                (datetime(1997, 9, 5, 9, 0), datetime(1997, 9, 6, 9, 0)),
+            ],
+        )
+
+    def testExIntervalWithExDate(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=6, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exdate(datetime(1997, 9, 2, 9, 0))
+        rrset.exinterval(datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 6, 9, 0))
+        self.assertEqual(
+            list(rrset),
+            [
+                datetime(1997, 9, 3, 9, 0),
+                datetime(1997, 9, 6, 9, 0),
+                datetime(1997, 9, 7, 9, 0),
+            ],
+        )
+
+    def testExIntervalWithExRule(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=7, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exrule(
+            rrule(
+                DAILY, interval=2, count=4, dtstart=datetime(1997, 9, 2, 9, 0)
+            )
+        )
+        rrset.exinterval(datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 6, 9, 0))
+        self.assertEqual(
+            list(rrset),
+            [datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 7, 9, 0)],
+        )
+
+    def testExIntervalDuplicateOccurrence(self):
+        # An occurrence generated by both an rrule and an rdate is
+        # excluded like any other, and no duplicate of it remains.
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=3, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.rdate(datetime(1997, 9, 3, 9, 0))
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0))
+        self.assertEqual(
+            list(rrset),
+            [datetime(1997, 9, 2, 9, 0), datetime(1997, 9, 4, 9, 0)],
+        )
+
+    def testExIntervalOutsideSchedule(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=3, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(datetime(1997, 8, 1, 9, 0), datetime(1997, 8, 5, 9, 0))
+        rrset.exinterval(
+            datetime(1997, 10, 1, 9, 0), datetime(1997, 10, 5, 9, 0)
+        )
+        self.assertEqual(rrset.count(), 3)
+
+    def testExIntervalEmptySet(self):
+        rrset = rruleset()
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0))
+        self.assertEqual(list(rrset), [])
+
+    def testExIntervalCount(self):
+        for cache in (True, False):
+            rrset = rruleset(cache=cache)
+            rrset.rrule(
+                rrule(DAILY, count=6, dtstart=datetime(1997, 9, 2, 9, 0))
+            )
+            rrset.exinterval(
+                datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 6, 9, 0)
+            )
+            self.assertEqual(rrset.count(), 4)
+            self.assertEqual(rrset.count(), 4)
+
+    def testExIntervalInvalidatesCache(self):
+        for cache in (True, False):
+            rrset = rruleset(cache=cache)
+            rrset.rrule(
+                rrule(DAILY, count=6, dtstart=datetime(1997, 9, 2, 9, 0))
+            )
+
+            # Check the length twice - first one sets a cache, second
+            # reads it
+            self.assertEqual(rrset.count(), 6)
+            self.assertEqual(rrset.count(), 6)
+
+            # This should invalidate the cache and force an update
+            rrset.exinterval(
+                datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 6, 9, 0)
+            )
+
+            self.assertEqual(rrset.count(), 4)
+            self.assertEqual(rrset.count(), 4)
+
+    def testExIntervalAfterCompleteCache(self):
+        # An interval registered after the cached set has been fully
+        # iterated is honored by subsequent queries.
+        rrset = rruleset(cache=True)
+        rrset.rrule(rrule(DAILY, count=6, dtstart=datetime(1997, 9, 2, 9, 0)))
+        self.assertEqual(len(list(rrset)), 6)
+
+        rrset.exinterval(datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 6, 9, 0))
+
+        self.assertEqual(
+            list(rrset),
+            [
+                datetime(1997, 9, 2, 9, 0),
+                datetime(1997, 9, 3, 9, 0),
+                datetime(1997, 9, 6, 9, 0),
+                datetime(1997, 9, 7, 9, 0),
+            ],
+        )
+        self.assertEqual(rrset.count(), 4)
+
+    def testExIntervalBetween(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=10, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 8, 9, 0))
+        self.assertEqual(
+            rrset.between(
+                datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 9, 9, 0), inc=True
+            ),
+            [
+                datetime(1997, 9, 3, 9, 0),
+                datetime(1997, 9, 8, 9, 0),
+                datetime(1997, 9, 9, 9, 0),
+            ],
+        )
+
+    def testExIntervalAfterBefore(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=10, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 8, 9, 0))
+        self.assertEqual(
+            rrset.after(datetime(1997, 9, 3, 9, 0)), datetime(1997, 9, 8, 9, 0)
+        )
+        self.assertEqual(
+            rrset.before(datetime(1997, 9, 8, 9, 0)), datetime(1997, 9, 3, 9, 0)
+        )
+
+    def testExIntervalContains(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=5, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 5, 9, 0))
+        self.assertNotIn(datetime(1997, 9, 4, 9, 0), rrset)
+        self.assertIn(datetime(1997, 9, 5, 9, 0), rrset)
+
+    def testExIntervalGetItem(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=5, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 5, 9, 0))
+        self.assertEqual(rrset[0], datetime(1997, 9, 2, 9, 0))
+        self.assertEqual(rrset[1], datetime(1997, 9, 5, 9, 0))
+        self.assertEqual(rrset[-1], datetime(1997, 9, 6, 9, 0))
+
+    def testExIntervalUnboundedRule(self):
+        # Queries stay lazy: an unbounded rule does not need to be
+        # expanded in full to answer them.
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, dtstart=datetime(1997, 9, 2, 9, 0)))
+        rrset.exinterval(datetime(1997, 9, 4, 9, 0), datetime(1997, 9, 8, 9, 0))
+        self.assertEqual(
+            rrset.after(datetime(1997, 9, 3, 9, 0)), datetime(1997, 9, 8, 9, 0)
+        )
+        self.assertEqual(
+            rrset.between(
+                datetime(1997, 9, 3, 9, 0),
+                datetime(1997, 9, 10, 9, 0),
+                inc=True,
+            ),
+            [
+                datetime(1997, 9, 3, 9, 0),
+                datetime(1997, 9, 8, 9, 0),
+                datetime(1997, 9, 9, 9, 0),
+                datetime(1997, 9, 10, 9, 0),
+            ],
+        )
+
+    def testExIntervalReversed(self):
+        rrset = rruleset()
+        with self.assertRaises(ValueError):
+            rrset.exinterval(
+                datetime(1997, 9, 5, 9, 0), datetime(1997, 9, 3, 9, 0)
+            )
+
+    def testExIntervalEmpty(self):
+        rrset = rruleset()
+        with self.assertRaises(ValueError):
+            rrset.exinterval(
+                datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 3, 9, 0)
+            )
+
+    def testExIntervalMixedAwareness(self):
+        rrset = rruleset()
+        with self.assertRaises(ValueError):
+            rrset.exinterval(
+                datetime(1997, 9, 3, 9, 0),
+                datetime(1997, 9, 5, 9, 0, tzinfo=tz.UTC),
+            )
+        with self.assertRaises(ValueError):
+            rrset.exinterval(
+                datetime(1997, 9, 3, 9, 0, tzinfo=tz.UTC),
+                datetime(1997, 9, 5, 9, 0),
+            )
+
+    def testExIntervalNotDatetime(self):
+        rrset = rruleset()
+        with self.assertRaises(TypeError):
+            rrset.exinterval(date(1997, 9, 3), date(1997, 9, 5))
+        with self.assertRaises(TypeError):
+            rrset.exinterval(datetime(1997, 9, 3, 9, 0), None)
+
+    def testExIntervalConflictingIntervals(self):
+        rrset = rruleset()
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0))
+        with self.assertRaises(ValueError):
+            rrset.exinterval(
+                datetime(1997, 9, 5, 9, 0, tzinfo=tz.UTC),
+                datetime(1997, 9, 6, 9, 0, tzinfo=tz.UTC),
+            )
+
+    def testExIntervalConflictingRRule(self):
+        rrset = rruleset()
+        rrset.rrule(rrule(DAILY, count=3, dtstart=datetime(1997, 9, 2, 9, 0)))
+        with self.assertRaises(ValueError):
+            rrset.exinterval(
+                datetime(1997, 9, 3, 9, 0, tzinfo=tz.UTC),
+                datetime(1997, 9, 4, 9, 0, tzinfo=tz.UTC),
+            )
+
+    def testExIntervalConflictingRDate(self):
+        rrset = rruleset()
+        rrset.rdate(datetime(1997, 9, 2, 9, 0, tzinfo=tz.UTC))
+        with self.assertRaises(ValueError):
+            rrset.exinterval(
+                datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0)
+            )
+
+    def testRRuleConflictingExInterval(self):
+        rrset = rruleset()
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0))
+        with self.assertRaises(ValueError):
+            rrset.rrule(
+                rrule(
+                    DAILY,
+                    count=3,
+                    dtstart=datetime(1997, 9, 2, 9, 0, tzinfo=tz.UTC),
+                )
+            )
+
+    def testRDateConflictingExInterval(self):
+        rrset = rruleset()
+        rrset.exinterval(
+            datetime(1997, 9, 3, 9, 0, tzinfo=tz.UTC),
+            datetime(1997, 9, 4, 9, 0, tzinfo=tz.UTC),
+        )
+        with self.assertRaises(ValueError):
+            rrset.rdate(datetime(1997, 9, 2, 9, 0))
+
+    def testExIntervalBeforeRRule(self):
+        # Intervals may be registered before the rules they apply to.
+        rrset = rruleset()
+        rrset.exinterval(datetime(1997, 9, 3, 9, 0), datetime(1997, 9, 4, 9, 0))
+        rrset.rrule(rrule(DAILY, count=3, dtstart=datetime(1997, 9, 2, 9, 0)))
+        self.assertEqual(
+            list(rrset),
+            [datetime(1997, 9, 2, 9, 0), datetime(1997, 9, 4, 9, 0)],
+        )
+
+    def testExIntervalAware(self):
+        rrset = rruleset()
+        rrset.rrule(
+            rrule(
+                DAILY,
+                count=4,
+                dtstart=datetime(1997, 9, 2, 9, 0, tzinfo=tz.UTC),
+            )
+        )
+        rrset.exinterval(
+            datetime(1997, 9, 3, 9, 0, tzinfo=tz.UTC),
+            datetime(1997, 9, 5, 9, 0, tzinfo=tz.UTC),
+        )
+        self.assertEqual(
+            list(rrset),
+            [
+                datetime(1997, 9, 2, 9, 0, tzinfo=tz.UTC),
+                datetime(1997, 9, 5, 9, 0, tzinfo=tz.UTC),
+            ],
+        )
+
+    def testExIntervalAwareOtherTimezone(self):
+        # Aware intervals are matched by absolute instant, so they may
+        # be expressed in a different time zone than the occurrences.
+        NYC = tz.gettz("America/New_York")
+        rrset = rruleset()
+        rrset.rrule(
+            rrule(
+                DAILY,
+                count=3,
+                dtstart=datetime(1997, 9, 2, 12, 0, tzinfo=tz.UTC),
+            )
+        )
+        # 08:00-13:00 in New York (EDT, UTC-4) is 12:00-17:00 UTC,
+        # covering only the second occurrence.
+        rrset.exinterval(
+            datetime(1997, 9, 3, 8, 0, tzinfo=NYC),
+            datetime(1997, 9, 3, 13, 0, tzinfo=NYC),
+        )
+        self.assertEqual(
+            list(rrset),
+            [
+                datetime(1997, 9, 2, 12, 0, tzinfo=tz.UTC),
+                datetime(1997, 9, 4, 12, 0, tzinfo=tz.UTC),
+            ],
+        )
+
+    def testExIntervalDSTFoldFirstOccurrence(self):
+        # When a wall clock time occurs twice (DST ending), only the
+        # occurrence whose instant falls in the interval is excluded.
+        NYC = tz.gettz("America/New_York")
+        first = datetime(2026, 11, 1, 1, 30, tzinfo=NYC, fold=0)
+        second = datetime(2026, 11, 1, 1, 30, tzinfo=NYC, fold=1)
+        self.assertNotEqual(first.utcoffset(), second.utcoffset())
+
+        rrset = rruleset()
+        rrset.rdate(first)
+        rrset.rdate(second)
+        # 05:00-06:00 UTC covers 01:30 EDT (05:30 UTC) but not
+        # 01:30 EST (06:30 UTC).
+        rrset.exinterval(
+            datetime(2026, 11, 1, 5, 0, tzinfo=tz.UTC),
+            datetime(2026, 11, 1, 6, 0, tzinfo=tz.UTC),
+        )
+        self.assertEqual(list(rrset), [second])
+
+    def testExIntervalDSTFoldSecondOccurrence(self):
+        NYC = tz.gettz("America/New_York")
+        first = datetime(2026, 11, 1, 1, 30, tzinfo=NYC, fold=0)
+        second = datetime(2026, 11, 1, 1, 30, tzinfo=NYC, fold=1)
+
+        rrset = rruleset()
+        rrset.rdate(first)
+        rrset.rdate(second)
+        # 06:00-07:00 UTC covers 01:30 EST (06:30 UTC) but not
+        # 01:30 EDT (05:30 UTC).
+        rrset.exinterval(
+            datetime(2026, 11, 1, 6, 0, tzinfo=tz.UTC),
+            datetime(2026, 11, 1, 7, 0, tzinfo=tz.UTC),
+        )
+        self.assertEqual(list(rrset), [first])
+
+    def testDSTFoldOccurrencesAreDistinct(self):
+        # The two folds of a repeated wall clock time are distinct
+        # occurrences of the set, not duplicates of each other.
+        NYC = tz.gettz("America/New_York")
+        first = datetime(2026, 11, 1, 1, 30, tzinfo=NYC, fold=0)
+        second = datetime(2026, 11, 1, 1, 30, tzinfo=NYC, fold=1)
+
+        rrset = rruleset()
+        rrset.rdate(first)
+        rrset.rdate(second)
+        self.assertEqual(list(rrset), [first, second])
+
+
 class WeekdayTest(unittest.TestCase):
     def testInvalidNthWeekday(self):
         with self.assertRaises(ValueError):
@@ -4982,6 +5451,29 @@ def test_restored_rruleset_can_invalidate_cache(roundtrip, state):
     extra = datetime(2024, 3, 1)
     restored.rdate(extra)
     assert list(restored) == expected[1:] + [extra]
+    assert list(original) == expected
+
+
+@pytest.mark.parametrize("state", ["empty", "partial", "complete"])
+def test_rruleset_exinterval_roundtrip(roundtrip, state):
+    """Exclusion intervals survive pickling and deepcopy."""
+    start = datetime(2024, 1, 1)
+    original = rruleset(cache=True)
+    original.rrule(rrule(DAILY, dtstart=start, count=10))
+    original.exinterval(start + timedelta(days=2), start + timedelta(days=5))
+    expected = [start + timedelta(days=i) for i in (0, 1, 5, 6, 7, 8, 9)]
+    if state == "partial":
+        assert next(iter(original)) == expected[0]
+    elif state == "complete":
+        assert list(original) == expected
+
+    restored = roundtrip(original)
+    assert list(restored) == expected
+    # The restored set still accepts new intervals.
+    restored.exinterval(start + timedelta(days=6), start + timedelta(days=7))
+    assert list(restored) == [
+        dt for dt in expected if dt != start + timedelta(days=6)
+    ]
     assert list(original) == expected
 
 
