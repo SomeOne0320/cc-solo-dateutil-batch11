@@ -2929,6 +2929,126 @@ class RRuleTest(unittest.TestCase):
         rr = rrulestr(rrstr)
         assert list(rr) == [datetime(1997, 9, 4), datetime(1997, 9, 11)]
 
+    def testStrSetRDateWithTZID(self):
+        # RDATE (e.g. temporary overtime) carrying the same TZID marking as
+        # the EXDATE properties in the same calendar used to fail parsing.
+        BXL = tz.gettz('Europe/Brussels')
+        self.assertIsNotNone(BXL)
+        rrstr = '\n'.join([
+            "DTSTART;TZID=Europe/Brussels:19970902T090000",
+            "RRULE:FREQ=DAILY;COUNT=5",
+            "RDATE;TZID=Europe/Brussels:19970910T080000,19970911T080000",
+            "EXDATE;TZID=Europe/Brussels:19970903T090000",
+        ])
+
+        rr = rrulestr(rrstr)
+        assert list(rr) == [
+            datetime(1997, 9, 2, 9, 0, tzinfo=BXL),
+            datetime(1997, 9, 4, 9, 0, tzinfo=BXL),
+            datetime(1997, 9, 5, 9, 0, tzinfo=BXL),
+            datetime(1997, 9, 6, 9, 0, tzinfo=BXL),
+            datetime(1997, 9, 10, 8, 0, tzinfo=BXL),
+            datetime(1997, 9, 11, 8, 0, tzinfo=BXL),
+        ]
+
+    def testStrSetRDateWithTZIDMultipleValues(self):
+        # Every value in a multi-value TZID field is interpreted in the
+        # timezone declared on the field.
+        NYC = tz.gettz('America/New_York')
+        self.assertIsNotNone(NYC)
+        rrstr = ("RDATE;TZID=America/New_York:"
+                 "19971001T100000,19971002T110000")
+
+        assert list(rrulestr(rrstr)) == [
+            datetime(1997, 10, 1, 10, 0, tzinfo=NYC),
+            datetime(1997, 10, 2, 11, 0, tzinfo=NYC),
+        ]
+
+    def testStrSetRDateValueDate(self):
+        # A date-only RDATE is read at midnight, like date-only EXDATE.
+        rrstr = '\n'.join([
+            "DTSTART;VALUE=DATE:19970902",
+            "RRULE:FREQ=DAILY;COUNT=2",
+            "RDATE;VALUE=DATE:19970910",
+            "EXDATE;VALUE=DATE:19970903",
+        ])
+
+        rr = rrulestr(rrstr)
+        assert list(rr) == [datetime(1997, 9, 2), datetime(1997, 9, 10)]
+
+    def testStrSetRDateTZIDParameterOrder(self):
+        # The order of the TZID and VALUE parameters must not matter, on any
+        # of DTSTART/RDATE/EXDATE.
+        BXL = tz.gettz('Europe/Brussels')
+        self.assertIsNotNone(BXL)
+        tzid_first = '\n'.join([
+            "DTSTART;TZID=Europe/Brussels;VALUE=DATE-TIME:19970902T090000",
+            "RDATE;TZID=Europe/Brussels;VALUE=DATE-TIME:19970904T090000",
+            "EXDATE;TZID=Europe/Brussels;VALUE=DATE-TIME:19970905T090000",
+        ])
+        value_first = '\n'.join([
+            "DTSTART;VALUE=DATE-TIME;TZID=Europe/Brussels:19970902T090000",
+            "RDATE;VALUE=DATE-TIME;TZID=Europe/Brussels:19970904T090000",
+            "EXDATE;VALUE=DATE-TIME;TZID=Europe/Brussels:19970905T090000",
+        ])
+
+        expected = [datetime(1997, 9, 4, 9, tzinfo=BXL)]
+        assert list(rrulestr(tzid_first)) == expected
+        assert list(rrulestr(value_first)) == expected
+
+    def testStrSetRDateTZIDMappingPreservesName(self):
+        # The tzids mapping/callable is looked up with the timezone name as
+        # written in the file, regardless of parameter casing.
+        NYC = tz.gettz('America/New_York')
+        self.assertIsNotNone(NYC)
+        seen = []
+
+        def lookup(name):
+            seen.append(name)
+            return NYC
+
+        rr = rrulestr("rdate;TzId=America/New_York:19970904T090000",
+                      tzids=lookup)
+        assert seen == ['America/New_York']
+        assert list(rr) == [datetime(1997, 9, 4, 9, tzinfo=NYC)]
+
+        rr = rrulestr("RDATE;TZID=America/New_York:19970904T090000",
+                      tzids={'America/New_York': NYC})
+        assert list(rr) == [datetime(1997, 9, 4, 9, tzinfo=NYC)]
+
+    def testStrSetRDateUnknownTZIDRaises(self):
+        # A declared timezone that cannot be resolved must not silently fall
+        # back to a naive datetime.
+        with pytest.raises(ValueError):
+            rrulestr("RDATE;TZID=Bogus/Zone:19970904T090000")
+
+        with pytest.raises(ValueError):
+            rrulestr("RDATE;TZID=Bogus:19970904T090000",
+                     tzids={'Bogus': None})
+
+    def testStrSetRDateConflictingTZID(self):
+        # A date carrying its own timezone together with a field-level TZID
+        # is an error, for RDATE as it already is for DTSTART/EXDATE.
+        with pytest.raises(ValueError):
+            rrulestr("RDATE;TZID=America/New_York:19970904T090000Z")
+
+    def testStrSetRDateLegacyUTCAndNaive(self):
+        # Files writing UTC explicitly or no timezone at all stay readable.
+        assert list(rrulestr(
+            "DTSTART:19970902T090000Z\n"
+            "RRULE:FREQ=DAILY;COUNT=2\n"
+            "RDATE:19970910T080000Z\n"
+            "EXDATE:19970903T090000Z\n"
+        )) == [
+            datetime(1997, 9, 2, 9, tzinfo=tz.UTC),
+            datetime(1997, 9, 10, 8, tzinfo=tz.UTC),
+        ]
+
+        assert list(rrulestr("RDATE:19970904T090000,19970905T090000")) == [
+            datetime(1997, 9, 4, 9),
+            datetime(1997, 9, 5, 9),
+        ]
+
     def testStrSetDateAndExDate(self):
         self.assertEqual(list(rrulestr(
                               "DTSTART:19970902T090000\n"

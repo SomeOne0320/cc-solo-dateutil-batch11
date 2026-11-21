@@ -1584,10 +1584,12 @@ class _rrulestr:
 
         for parm in parms:
             if parm.startswith("TZID="):
+                tzkey = parm.split('TZID=')[-1]
                 try:
-                    tzkey = rule_tzids[parm.split('TZID=')[-1]]
+                    tzkey = rule_tzids[tzkey]
                 except KeyError:
-                    continue
+                    raise ValueError('unknown timezone specified in TZID: ' +
+                                     tzkey)
                 if tzids is None:
                     from . import tz
                     tzlookup = tz.gettz
@@ -1601,6 +1603,10 @@ class _rrulestr:
                         raise ValueError(msg)
 
                 TZID = tzlookup(tzkey)
+                if TZID is None:
+                    msg = ('The specified timezone cannot be found: ' +
+                           tzkey)
+                    raise ValueError(msg)
                 continue
 
             # RFC 5445 3.8.2.4: The VALUE parameter is optional, but may be found
@@ -1619,7 +1625,8 @@ class _rrulestr:
                 if date.tzinfo is None:
                     date = date.replace(tzinfo=TZID)
                 else:
-                    raise ValueError('DTSTART/EXDATE specifies multiple timezone')
+                    raise ValueError(
+                        'DTSTART/RDATE/EXDATE specifies multiple timezone')
             datevals.append(date)
 
         return datevals
@@ -1633,14 +1640,20 @@ class _rrulestr:
                    ignoretz=False,
                    tzids=None,
                    tzinfos=None):
-        global parser
         if compatible:
             forceset = True
             unfold = True
 
+        # Build the TZID lookup from the original (un-uppercased) string so
+        # that the caller-supplied tzids mapping/callable receives the exact
+        # timezone name written in the file. The key is uppercased only for
+        # case-insensitive matching against the (uppercased) property
+        # parameters. Matching up to ';' or ':' makes the result independent
+        # of the order of the TZID parameter relative to other parameters
+        # (e.g. VALUE).
         TZID_NAMES = dict(map(
             lambda x: (x.upper(), x),
-            re.findall('TZID=(?P<name>[^:]+):', s)
+            re.findall('TZID=(?P<name>[^;:]+)', s, flags=re.IGNORECASE)
         ))
         s = s.upper()
         if not s.strip():
@@ -1690,10 +1703,10 @@ class _rrulestr:
                         raise ValueError("unsupported RRULE parm: " + parm)
                     rrulevals.append(value)
                 elif name == "RDATE":
-                    for parm in parms:
-                        if parm != "VALUE=DATE-TIME":
-                            raise ValueError("unsupported RDATE parm: "+parm)
-                    rdatevals.append(value)
+                    rdatevals.extend(
+                        self._parse_date_value(value, parms, TZID_NAMES,
+                                               ignoretz, tzids, tzinfos)
+                    )
                 elif name == "EXRULE":
                     for parm in parms:
                         raise ValueError("unsupported EXRULE parm: "+parm)
@@ -1715,18 +1728,13 @@ class _rrulestr:
                     raise ValueError("unsupported property: "+name)
             if (forceset or len(rrulevals) > 1 or rdatevals
                     or exrulevals or exdatevals):
-                if not parser and (rdatevals or exdatevals):
-                    from dateutil import parser
                 rset = rruleset(cache=cache)
                 for value in rrulevals:
                     rset.rrule(self._parse_rfc_rrule(value, dtstart=dtstart,
                                                      ignoretz=ignoretz,
                                                      tzinfos=tzinfos))
                 for value in rdatevals:
-                    for datestr in value.split(','):
-                        rset.rdate(parser.parse(datestr,
-                                                ignoretz=ignoretz,
-                                                tzinfos=tzinfos))
+                    rset.rdate(value)
                 for value in exrulevals:
                     rset.exrule(self._parse_rfc_rrule(value, dtstart=dtstart,
                                                       ignoretz=ignoretz,
