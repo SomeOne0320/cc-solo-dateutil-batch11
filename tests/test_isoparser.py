@@ -213,6 +213,30 @@ def test_iso_ordinal(isoord, dt_expected):
 
         assert isoparse(dtstr) == dt_expected
 
+@pytest.mark.parametrize('dtstr,dt_expected', [
+    ('2012-W01-1T12:00', datetime(2012, 1, 2, 12)),
+    ('2012W011T12:00', datetime(2012, 1, 2, 12)),
+    ('2012-W01-1T12:00+05:00', datetime(2012, 1, 2, 12,
+                                        tzinfo=tz.tzoffset(None, 18000))),
+    ('2012W011T12Z', datetime(2012, 1, 2, 12, tzinfo=UTC)),
+    ('2012-041T12:00', datetime(2012, 2, 10, 12)),
+    ('2012041T12:00', datetime(2012, 2, 10, 12)),
+    ('2012-041T12:00-05:30', datetime(2012, 2, 10, 12,
+                                      tzinfo=tz.tzoffset(None, -19800))),
+    ('2012041T12+0530', datetime(2012, 2, 10, 12,
+                                 tzinfo=tz.tzoffset(None, 19800))),
+])
+def test_uncommon_date_with_time(dtstr, dt_expected):
+    assert isoparse(dtstr) == dt_expected
+
+@pytest.mark.parametrize('dtstr', [
+    '2012-W01T12:00',  # Week without a day, then a time
+    '2012W01T12:00',  # Week without a day, basic format
+])
+def test_uncommon_date_with_time_raises(dtstr):
+    with pytest.raises(ValueError):
+        isoparse(dtstr)
+
 
 ###
 # Acceptance of bytes
@@ -270,7 +294,13 @@ def test_bytes(isostr, dt):
         ("2014_W01-1", ValueError),  # Invalid separator
         ("2014W01-1", ValueError),  # Inconsistent use of dashes
         ("2014-W011", ValueError),  # Inconsistent use of dashes
+        ("2014-W01T12:00", ValueError),  # Inconsistent use of dashes
+        ("2014W01T12:00", ValueError),  # Missing ISO week day
         ("20200728121240", ValueError),  # Seconds too short
+        ("2014-04T12:00", ValueError),  # Unknown components after month
+        ("2014-04-11T12:30:15+05:0", ValueError),  # Offset minutes too short
+        ("2014-04-11T12:30:15+05:000", ValueError),  # Offset minutes too long
+        ("2014-04-11T12:30:15+050:00", ValueError),  # Offset hours too long
     ],
 )
 def test_iso_raises(isostr, exception):
@@ -330,6 +360,18 @@ def test_parse_tzstr_zero_as_utc(tzstr, zero_as_utc):
     assert (type(tzi) == tz.tzutc) == zero_as_utc
 
 
+@pytest.mark.parametrize('tzstr', [
+    '+05:30', '+0530', '-05:30', '-0530', '+05', '-05'
+])
+def test_parse_tzstr_equivalent_forms(tzstr):
+    sign = -1 if tzstr[0] == '-' else 1
+    hours, minutes = int(tzstr[1:3]), 0
+    if len(tzstr) > 3:
+        minutes = int(tzstr[-2:])
+    expected = tz.tzoffset(None, sign * (hours * 60 + minutes) * 60)
+    assert isoparser().parse_tzstr(tzstr) == expected
+
+
 @pytest.mark.parametrize(
     "tzstr,exception",
     [
@@ -343,6 +385,13 @@ def test_parse_tzstr_zero_as_utc(tzstr, zero_as_utc):
         ("+ 1:00", ValueError),  # Whitespace in hours
         ("+-1:00", ValueError),  # Sign in hours
         ("+01:-5", ValueError),  # Sign in minutes
+        ("+5:30", ValueError),  # Hours too short
+        ("+05:3", ValueError),  # Minutes too short after separator
+        ("+053", ValueError),  # Minutes too short without separator
+        ("+05301", ValueError),  # Minutes too long without separator
+        ("+05:301", ValueError),  # Minutes too long after separator
+        ("+05::30", ValueError),  # Duplicate separator
+        ("+05:30Z", ValueError),  # Trailing text
     ],
 )
 def test_parse_tzstr_fails(tzstr, exception):

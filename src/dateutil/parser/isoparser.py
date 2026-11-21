@@ -17,6 +17,60 @@ import re
 __all__ = ["isoparse", "isoparser"]
 
 
+class _Cursor:
+    """A position in an ISO-8601 byte string.
+
+    ``pos`` is the offset of the next unread byte, ``current`` is the byte at
+    that offset (empty at the end) and ``rest`` is everything not yet read.
+    The reading helpers advance ``pos`` as they consume input, so parsers can
+    leave the cursor at the boundary where the next portion starts.
+    """
+
+    __slots__ = ("data", "pos")
+
+    def __init__(self, data):
+        self.data = data
+        self.pos = 0
+
+    @property
+    def at_end(self):
+        return self.pos >= len(self.data)
+
+    @property
+    def current(self):
+        return self.data[self.pos : self.pos + 1]
+
+    @property
+    def rest(self):
+        return self.data[self.pos :]
+
+    def advance(self, n=1):
+        self.pos += n
+
+    def read_digits(self, n):
+        """Read exactly ``n`` ASCII digits and advance past them."""
+        digits = self.data[self.pos : self.pos + n]
+        if len(digits) != n or not digits.isdigit():
+            raise ValueError(
+                "Expected {} digits, got {!r}".format(n, digits.decode("ascii"))
+            )
+        self.pos += n
+        return int(digits)
+
+    def skip(self, sep):
+        """Consume ``sep`` if it is current, returning whether it was."""
+        if self.current == sep:
+            self.advance()
+            return True
+        return False
+
+    def expect(self, sep, message):
+        """Consume the required separator ``sep`` or raise ``ValueError``."""
+        if self.current != sep:
+            raise ValueError(message)
+        self.advance()
+
+
 def _takes_ascii(f):
     @wraps(f)
     def func(self, str_in, *args, **kwargs):
@@ -129,11 +183,12 @@ class isoparser:
 
         .. versionadded:: 2.7.0
         """
-        components, pos = self._parse_isodate(dt_str)
+        components, cursor = self._parse_isodate(dt_str)
 
-        if len(dt_str) > pos:
-            if self._sep is None or dt_str[pos:pos + 1] == self._sep:
-                components += self._parse_isotime(dt_str[pos + 1:])
+        if not cursor.at_end:
+            if self._sep is None or cursor.current == self._sep:
+                cursor.advance()
+                components += self._parse_isotime(cursor.rest)
             else:
                 raise ValueError('String contains unknown ISO components')
 
@@ -154,8 +209,8 @@ class isoparser:
         :return:
             Returns a :class:`datetime.date` object
         """
-        components, pos = self._parse_isodate(datestr)
-        if pos < len(datestr):
+        components, cursor = self._parse_isodate(datestr)
+        if not cursor.at_end:
             raise ValueError('String contains unknown ISO ' +
                              'components: {!r}'.format(datestr.decode('ascii')))
         return date(*components)
@@ -201,105 +256,92 @@ class isoparser:
     _TIME_SEP = b':'
     _FRACTION_REGEX = re.compile(b'[\\.,]([0-9]+)')
 
-    def _parse_digits(self, s, pos, n):
-        """Parse exactly ``n`` ASCII digits starting at ``pos``."""
-        digits = s[pos : pos + n]
-        if len(digits) != n or not digits.isdigit():
-            raise ValueError(
-                "Expected {} digits, got {!r}".format(n, digits.decode("ascii"))
-            )
-        return int(digits)
-
     def _parse_isodate(self, dt_str):
-        try:
-            return self._parse_isodate_common(dt_str)
-        except ValueError:
-            return self._parse_isodate_uncommon(dt_str)
+        """Parse the date at the start of ``dt_str``.
 
-    def _parse_isodate_common(self, dt_str):
-        len_str = len(dt_str)
-        components = [1, 1, 1]
-
-        if len_str < 4:
-            raise ValueError('ISO string too short')
-
-        # Year
-        components[0] = self._parse_digits(dt_str, 0, 4)
-        pos = 4
-        if pos >= len_str:
-            return components, pos
-
-        has_sep = dt_str[pos:pos + 1] == self._DATE_SEP
-        if has_sep:
-            pos += 1
-
-        # Month
-        if len_str - pos < 2:
-            raise ValueError('Invalid common month')
-
-        components[1] = self._parse_digits(dt_str, pos, 2)
-        pos += 2
-
-        if pos >= len_str:
-            if has_sep:
-                return components, pos
-            else:
-                raise ValueError('Invalid ISO format')
-
-        if has_sep:
-            if dt_str[pos:pos + 1] != self._DATE_SEP:
-                raise ValueError('Invalid separator in ISO string')
-            pos += 1
-
-        # Day
-        if len_str - pos < 2:
-            raise ValueError('Invalid common day')
-        components[2] = self._parse_digits(dt_str, pos, 2)
-        return components, pos + 2
-
-    def _parse_isodate_uncommon(self, dt_str):
+        Returns the date components and a cursor positioned at the first byte
+        that is not part of the date, which is where the date/time separator
+        (if there is one) starts.
+        """
+        cursor = _Cursor(dt_str)
         if len(dt_str) < 4:
             raise ValueError('ISO string too short')
 
-        # All ISO formats start with the year
-        year = self._parse_digits(dt_str, 0, 4)
+        # All ISO date formats start with the year
+        year = cursor.read_digits(4)
+        if cursor.at_end:
+            return [year, 1, 1], cursor
 
-        has_sep = dt_str[4:5] == self._DATE_SEP
-
-        pos = 4 + has_sep       # Skip '-' if it's there
-        if dt_str[pos:pos + 1] == b'W':
-            # YYYY-?Www-?D?
-            pos += 1
-            weekno = self._parse_digits(dt_str, pos, 2)
-            pos += 2
-
-            dayno = 1
-            if len(dt_str) > pos:
-                if (dt_str[pos:pos + 1] == self._DATE_SEP) != has_sep:
-                    raise ValueError('Inconsistent use of dash separator')
-
-                pos += has_sep
-
-                dayno = self._parse_digits(dt_str, pos, 1)
-                pos += 1
-
-            base_date = self._calculate_weekdate(year, weekno, dayno)
+        has_sep = cursor.skip(self._DATE_SEP)
+        if cursor.current == b'W':
+            components = self._parse_week_date(cursor, year, has_sep)
+        elif self._starts_calendar_date(cursor, has_sep):
+            components = self._parse_calendar_date(cursor, year, has_sep)
         else:
-            # YYYYDDD or YYYY-DDD
-            if len(dt_str) - pos < 3:
-                raise ValueError('Invalid ordinal day')
+            components = self._parse_ordinal_date(cursor, year)
 
-            ordinal_day = self._parse_digits(dt_str, pos, 3)
-            pos += 3
+        return components, cursor
 
-            if ordinal_day < 1 or ordinal_day > (365 + calendar.isleap(year)):
-                raise ValueError('Invalid ordinal day' +
-                                 ' {} for year {}'.format(ordinal_day, year))
+    def _starts_calendar_date(self, cursor, has_sep):
+        """Whether the bytes after the year start ``MM[-DD]`` rather than DDD.
 
-            base_date = date(year, 1, 1) + timedelta(days=ordinal_day - 1)
+        Basic-format dates have no separators, so four remaining digits are a
+        month and day and three are an ordinal day. With separators, ``MM``
+        followed by ``-`` continues to a day and ``MM`` alone is a
+        month-only date; any other shape is an ordinal day.
+        """
+        rest = cursor.rest
+        if has_sep:
+            return len(rest) == 2 or rest[2:3] == self._DATE_SEP
+        return len(rest) >= 4 and rest[:4].isdigit()
 
-        components = [base_date.year, base_date.month, base_date.day]
-        return components, pos
+    def _parse_calendar_date(self, cursor, year, has_sep):
+        """Parse ``MMDD`` or ``MM-DD`` after the year."""
+        components = [year, 1, 1]
+
+        if len(cursor.rest) < 2:
+            raise ValueError('Invalid common month')
+        components[1] = cursor.read_digits(2)
+
+        if cursor.at_end:
+            if has_sep:
+                return components
+            raise ValueError('Invalid ISO format')
+
+        if has_sep:
+            cursor.expect(self._DATE_SEP, 'Invalid separator in ISO string')
+
+        if len(cursor.rest) < 2:
+            raise ValueError('Invalid common day')
+        components[2] = cursor.read_digits(2)
+        return components
+
+    def _parse_week_date(self, cursor, year, has_sep):
+        """Parse ``Www[-D]`` or ``WwwD`` after the year."""
+        cursor.advance()  # 'W'
+        weekno = cursor.read_digits(2)
+
+        dayno = 1
+        if not cursor.at_end:
+            if cursor.skip(self._DATE_SEP) != has_sep:
+                raise ValueError('Inconsistent use of dash separator')
+            dayno = cursor.read_digits(1)
+
+        base_date = self._calculate_weekdate(year, weekno, dayno)
+        return [base_date.year, base_date.month, base_date.day]
+
+    def _parse_ordinal_date(self, cursor, year):
+        """Parse ``DDD`` after the year."""
+        if len(cursor.rest) < 3:
+            raise ValueError('Invalid ordinal day')
+
+        ordinal_day = cursor.read_digits(3)
+        if ordinal_day < 1 or ordinal_day > (365 + calendar.isleap(year)):
+            raise ValueError('Invalid ordinal day' +
+                             ' {} for year {}'.format(ordinal_day, year))
+
+        base_date = date(year, 1, 1) + timedelta(days=ordinal_day - 1)
+        return [base_date.year, base_date.month, base_date.day]
 
     def _calculate_weekdate(self, year, week, day):
         """
@@ -335,50 +377,22 @@ class isoparser:
         return week_1 + timedelta(days=week_offset)
 
     def _parse_isotime(self, timestr):
-        len_str = len(timestr)
-        components = [0, 0, 0, 0, None]
-        pos = 0
-        comp = -1
-
-        if len_str < 2:
+        """Parse an ISO time, including a trailing time zone offset."""
+        if len(timestr) < 2:
             raise ValueError('ISO time too short')
 
-        has_sep = False
+        cursor = _Cursor(timestr)
+        components = [0, 0, 0, 0, None]
 
-        while pos < len_str and comp < 5:
-            comp += 1
-
-            if timestr[pos:pos + 1] in b'-+Zz':
-                # Detect time zone boundary
-                components[-1] = self._parse_tzstr(timestr[pos:])
-                pos = len_str
-                break
-
-            if comp == 1 and timestr[pos:pos+1] == self._TIME_SEP:
-                has_sep = True
-                pos += 1
-            elif comp == 2 and has_sep:
-                if timestr[pos:pos+1] != self._TIME_SEP:
-                    raise ValueError('Inconsistent use of colon separator')
-                pos += 1
-
-            if comp < 3:
-                # Hour, minute, second
-                components[comp] = self._parse_digits(timestr, pos, 2)
-                pos += 2
-
-            if comp == 3:
-                # Fraction of a second
-                frac = self._FRACTION_REGEX.match(timestr[pos:])
-                if not frac:
-                    continue
-
-                us_str = frac.group(1)[:6]  # Truncate to microseconds
-                components[comp] = int(us_str) * 10**(6 - len(us_str))
-                pos += len(frac.group())
-
-        if pos < len_str:
-            raise ValueError('Unused components in ISO string')
+        if cursor.current in (b'-', b'+', b'Z', b'z'):
+            # A time may consist of an offset alone
+            components[-1] = self._parse_tzstr(cursor.rest)
+        else:
+            self._parse_time_fields(cursor, components)
+            if cursor.current in (b'-', b'+', b'Z', b'z'):
+                components[-1] = self._parse_tzstr(cursor.rest)
+            elif not cursor.at_end:
+                raise ValueError('Unused components in ISO string')
 
         if components[0] == 24:
             # Standard supports 00:00 and 24:00 as representations of midnight
@@ -387,28 +401,69 @@ class isoparser:
 
         return components
 
+    def _parse_time_fields(self, cursor, components):
+        """Read the hour, minute, second and fraction from ``cursor``.
+
+        Reads at most three colon-separated fields: a field is only read if
+        enough input remains, and every field after the first must use the
+        same separator as the first. Stops at the first byte that is not part
+        of the time, leaving the cursor there.
+        """
+        has_sep = False
+        for comp in range(3):
+            if comp > 0:
+                # An offset or the end of the input terminates the time
+                if cursor.at_end or cursor.current in (b'-', b'+', b'Z', b'z'):
+                    return
+
+                if comp == 1:
+                    has_sep = cursor.skip(self._TIME_SEP)
+                elif has_sep:
+                    cursor.expect(self._TIME_SEP,
+                                  'Inconsistent use of colon separator')
+
+            components[comp] = cursor.read_digits(2)
+
+        if cursor.current in (b'.', b','):
+            components[3] = self._parse_second_fraction(cursor)
+
+    def _parse_second_fraction(self, cursor):
+        """Read a decimal separator and fractional second digits."""
+        frac = self._FRACTION_REGEX.match(cursor.rest)
+        if not frac:
+            return 0
+
+        us_str = frac.group(1)[:6]  # Truncate to microseconds
+        cursor.advance(len(frac.group()))
+        return int(us_str) * 10**(6 - len(us_str))
+
     def _parse_tzstr(self, tzstr, zero_as_utc=True):
+        """Parse ``Z`` or a ``±HH``, ``±HH:MM`` or ``±HHMM`` offset."""
         if tzstr == b'Z' or tzstr == b'z':
             return tz.UTC
 
         if len(tzstr) not in {3, 5, 6}:
             raise ValueError('Time zone offset must be 1, 3, 5 or 6 characters')
 
-        if tzstr[0:1] == b'-':
+        cursor = _Cursor(tzstr)
+
+        if cursor.current == b'-':
             mult = -1
-        elif tzstr[0:1] == b'+':
+        elif cursor.current == b'+':
             mult = 1
         else:
             raise ValueError('Time zone offset requires sign')
+        cursor.advance()
 
-        hours = self._parse_digits(tzstr, 1, 2)
-        if len(tzstr) == 3:
+        hours = cursor.read_digits(2)
+        if cursor.at_end:
             minutes = 0
         else:
-            pos = 4 if tzstr[3:4] == self._TIME_SEP else 3
-            if len(tzstr) != pos + 2:
+            has_sep = cursor.skip(self._TIME_SEP)
+            expected_len = 6 if has_sep else 5
+            if len(tzstr) != expected_len:
                 raise ValueError("Invalid minutes in time zone offset")
-            minutes = self._parse_digits(tzstr, pos, 2)
+            minutes = cursor.read_digits(2)
 
         if zero_as_utc and hours == 0 and minutes == 0:
             return tz.UTC
